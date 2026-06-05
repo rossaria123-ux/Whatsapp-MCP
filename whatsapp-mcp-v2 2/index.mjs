@@ -40,20 +40,27 @@ function buildServer() {
       },
     },
     async ({ contact_key, message }) => {
+      console.log(`[TOOL] send_whatsapp_message called: contact=${contact_key} message="${message}"`);
+      console.log(`[ENV] TWILIO_ACCOUNT_SID=${process.env.TWILIO_ACCOUNT_SID ? process.env.TWILIO_ACCOUNT_SID.slice(0,10)+'...' : 'MISSING'}`);
+      console.log(`[ENV] TWILIO_AUTH_TOKEN=${process.env.TWILIO_AUTH_TOKEN ? 'SET' : 'MISSING'}`);
+      console.log(`[ENV] TWILIO_WHATSAPP_NUMBER=${process.env.TWILIO_WHATSAPP_NUMBER || 'MISSING'}`);
+
       const contact = config.contacts[contact_key];
       if (!contact) {
+        console.error(`[ERROR] Contact "${contact_key}" not found`);
         return {
           content: [{ type: "text", text: `Contact "${contact_key}" not found.` }],
           isError: true,
         };
       }
+      console.log(`[SEND] From: ${process.env.TWILIO_WHATSAPP_NUMBER} To: ${contact.whatsapp}`);
       try {
-        await twilioClient.messages.create({
+        const result = await twilioClient.messages.create({
           from: process.env.TWILIO_WHATSAPP_NUMBER,
           to: contact.whatsapp,
           body: message,
         });
-        console.log(`[SENT] To ${contact.name}: "${message}"`);
+        console.log(`[SENT] SID: ${result.sid} To ${contact.name}: "${message}"`);
         return {
           content: [
             {
@@ -63,7 +70,8 @@ function buildServer() {
           ],
         };
       } catch (err) {
-        console.error(`[ERROR]`, err.message);
+        console.error(`[TWILIO ERROR] ${err.message}`);
+        console.error(`[TWILIO ERROR] Code: ${err.code} Status: ${err.status}`);
         return {
           content: [{ type: "text", text: `Failed to send: ${err.message}` }],
           isError: true,
