@@ -12,16 +12,14 @@ const twilioClient = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
-// ─── Build MCP server ─────────────────────────────────────────────────────────
 function buildServer() {
   const server = new McpServer({
-    name: "whatsapp-assistant",
+    name: "messaging-assistant",
     version: "1.0.0",
   });
 
   const contactKeys = Object.keys(config.contacts);
 
-  // Tool 1: Send WhatsApp message
   server.registerTool(
     "send_whatsapp_message",
     {
@@ -40,38 +38,51 @@ function buildServer() {
       },
     },
     async ({ contact_key, message }) => {
-      console.log(`[TOOL] send_whatsapp_message called: contact=${contact_key} message="${message}"`);
-      console.log(`[ENV] TWILIO_ACCOUNT_SID=${process.env.TWILIO_ACCOUNT_SID ? process.env.TWILIO_ACCOUNT_SID.slice(0,10)+'...' : 'MISSING'}`);
-      console.log(`[ENV] TWILIO_AUTH_TOKEN=${process.env.TWILIO_AUTH_TOKEN ? 'SET' : 'MISSING'}`);
-      console.log(`[ENV] TWILIO_WHATSAPP_NUMBER=${process.env.TWILIO_WHATSAPP_NUMBER || 'MISSING'}`);
+      console.log(`[TOOL] send_whatsapp_message: contact=${contact_key} message="${message}"`);
 
       const contact = config.contacts[contact_key];
       if (!contact) {
-        console.error(`[ERROR] Contact "${contact_key}" not found`);
         return {
           content: [{ type: "text", text: `Contact "${contact_key}" not found.` }],
           isError: true,
         };
       }
+
       console.log(`[SEND] From: ${process.env.TWILIO_WHATSAPP_NUMBER} To: ${contact.whatsapp}`);
+
       try {
-        const result = await twilioClient.messages.create({
-          from: process.env.TWILIO_WHATSAPP_NUMBER,
-          to: contact.whatsapp,
-          body: message,
-        });
+        // Try free-form message first
+        let result;
+        try {
+          result = await twilioClient.messages.create({
+            from: process.env.TWILIO_WHATSAPP_NUMBER,
+            to: contact.whatsapp,
+            body: message,
+          });
+        } catch (freeFormErr) {
+          // Error 63016 = outside messaging window, use approved template
+          if (freeFormErr.code === 63016 && process.env.TWILIO_TEMPLATE_SID) {
+            console.log(`[TEMPLATE] Using template for ${contact.name}`);
+            result = await twilioClient.messages.create({
+              from: process.env.TWILIO_WHATSAPP_NUMBER,
+              to: contact.whatsapp,
+              contentSid: process.env.TWILIO_TEMPLATE_SID,
+              contentVariables: JSON.stringify({
+                "1": contact.name.split(" ")[0],
+                "2": message,
+              }),
+            });
+          } else {
+            throw freeFormErr;
+          }
+        }
+
         console.log(`[SENT] SID: ${result.sid} To ${contact.name}: "${message}"`);
         return {
-          content: [
-            {
-              type: "text",
-              text: `Message sent to ${contact.name}: "${message}"`,
-            },
-          ],
+          content: [{ type: "text", text: `Message sent to ${contact.name}: "${message}"` }],
         };
       } catch (err) {
-        console.error(`[TWILIO ERROR] ${err.message}`);
-        console.error(`[TWILIO ERROR] Code: ${err.code} Status: ${err.status}`);
+        console.error(`[TWILIO ERROR] ${err.message} Code: ${err.code}`);
         return {
           content: [{ type: "text", text: `Failed to send: ${err.message}` }],
           isError: true,
@@ -80,7 +91,6 @@ function buildServer() {
     }
   );
 
-  // Tool 2: List contacts
   server.registerTool(
     "list_contacts",
     {
@@ -98,7 +108,6 @@ function buildServer() {
     }
   );
 
-  // Tool 3: Set reminder
   server.registerTool(
     "set_reminder",
     {
@@ -113,12 +122,7 @@ function buildServer() {
     async ({ contact_name, time, task }) => {
       console.log(`[REMINDER] ${time}: ${task} — re: ${contact_name}`);
       return {
-        content: [
-          {
-            type: "text",
-            text: `Reminder set: ${task} (${contact_name}) at ${time}`,
-          },
-        ],
+        content: [{ type: "text", text: `Reminder set: ${task} (${contact_name}) at ${time}` }],
       };
     }
   );
@@ -126,16 +130,13 @@ function buildServer() {
   return server;
 }
 
-// ─── HTTP server with session management ─────────────────────────────────────
 const app = createMcpExpressApp({ host: "0.0.0.0" });
 const transports = {};
 
 app.post("/mcp", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
-
   try {
     let transport;
-
     if (sessionId && transports[sessionId]) {
       transport = transports[sessionId];
     } else if (!sessionId && isInitializeRequest(req.body)) {
@@ -162,7 +163,6 @@ app.post("/mcp", async (req, res) => {
       });
       return;
     }
-
     await transport.handleRequest(req, res, req.body);
   } catch (err) {
     console.error("[ERROR]", err);
