@@ -25,6 +25,11 @@ export default {
       whatsapp: "whatsapp:+628197415330",
       role: "",
     },
+    gaza: {
+      name: "Gaza Saleh Ali",
+      whatsapp: "whatsapp:+41765164576",
+      role: "",
+    },
   },
 
 };
