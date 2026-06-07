@@ -13,12 +13,9 @@ const twilioClient = twilio(
 );
 
 // ─── Fuzzy contact lookup ─────────────────────────────────────────────────────
-// Finds a contact by key, name, or any alias -- case insensitive, partial match
 function findContact(query) {
   const q = query.toLowerCase().trim();
-  // Exact key match first
   if (config.contacts[q]) return { key: q, ...config.contacts[q] };
-  // Search by name, aliases
   for (const [key, contact] of Object.entries(config.contacts)) {
     const searchable = [
       key,
@@ -53,7 +50,7 @@ function buildServer() {
       inputSchema: {
         contact_query: z
           .string()
-          .describe("Name, nickname, or alias of who to message. Can be fuzzy e.g. 'alpha', 'angel', 'keele'"),
+          .describe("Name, nickname, or alias of who to message."),
         message: z
           .string()
           .describe("The message body to send."),
@@ -74,27 +71,28 @@ function buildServer() {
 
       try {
         let result;
-        try {
+        const templateSid = process.env.TWILIO_TEMPLATE_SID;
+
+        if (templateSid) {
+          // Always use template to initiate -- works regardless of messaging window
+          console.log(`[TEMPLATE] Sending via approved template to ${contact.name}`);
+          result = await twilioClient.messages.create({
+            from: process.env.TWILIO_WHATSAPP_NUMBER,
+            to: contact.whatsapp,
+            contentSid: templateSid,
+            contentVariables: JSON.stringify({
+              "1": contact.name.split(" ")[0],
+              "2": message,
+            }),
+          });
+        } else {
+          // No template configured -- try free-form
+          console.log(`[FREEFORM] No template SID set, trying free-form`);
           result = await twilioClient.messages.create({
             from: process.env.TWILIO_WHATSAPP_NUMBER,
             to: contact.whatsapp,
             body: message,
           });
-        } catch (freeFormErr) {
-          if (freeFormErr.code === 63016 && process.env.TWILIO_TEMPLATE_SID) {
-            console.log(`[TEMPLATE] Using template for ${contact.name}`);
-            result = await twilioClient.messages.create({
-              from: process.env.TWILIO_WHATSAPP_NUMBER,
-              to: contact.whatsapp,
-              contentSid: process.env.TWILIO_TEMPLATE_SID,
-              contentVariables: JSON.stringify({
-                "1": contact.name.split(" ")[0],
-                "2": message,
-              }),
-            });
-          } else {
-            throw freeFormErr;
-          }
         }
 
         console.log(`[SENT] SID: ${result.sid} To ${contact.name}: "${message}"`);
