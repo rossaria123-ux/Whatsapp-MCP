@@ -12,6 +12,26 @@ const twilioClient = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
+// ─── Fuzzy contact lookup ─────────────────────────────────────────────────────
+// Finds a contact by key, name, or any alias -- case insensitive, partial match
+function findContact(query) {
+  const q = query.toLowerCase().trim();
+  // Exact key match first
+  if (config.contacts[q]) return { key: q, ...config.contacts[q] };
+  // Search by name, aliases
+  for (const [key, contact] of Object.entries(config.contacts)) {
+    const searchable = [
+      key,
+      contact.name.toLowerCase(),
+      ...(contact.aliases || []).map(a => a.toLowerCase()),
+    ];
+    if (searchable.some(s => s.includes(q) || q.includes(s))) {
+      return { key, ...contact };
+    }
+  }
+  return null;
+}
+
 function buildServer() {
   const server = new McpServer({
     name: "messaging-assistant",
@@ -19,6 +39,9 @@ function buildServer() {
   });
 
   const contactKeys = Object.keys(config.contacts);
+  const contactList = Object.entries(config.contacts)
+    .map(([key, c]) => `${key} (${c.name}${c.aliases?.length ? ", aka: " + c.aliases.join(", ") : ""})`)
+    .join("; ");
 
   server.registerTool(
     "send_whatsapp_message",
@@ -26,32 +49,30 @@ function buildServer() {
       title: "Send WhatsApp message",
       description:
         `Send a WhatsApp message to one of ${config.owner.name}'s contacts. ` +
-        `Use when asked to message, text, ping, notify, or reach someone. ` +
-        `Available contacts: ${contactKeys.join(", ")}.`,
+        `You can use any name, nickname or alias. Contacts: ${contactList}.`,
       inputSchema: {
-        contact_key: z
-          .enum(contactKeys)
-          .describe(`Who to message. One of: ${contactKeys.join(", ")}`),
+        contact_query: z
+          .string()
+          .describe("Name, nickname, or alias of who to message. Can be fuzzy e.g. 'alpha', 'angel', 'keele'"),
         message: z
           .string()
-          .describe("The message body to send, written professionally on behalf of the owner."),
+          .describe("The message body to send."),
       },
     },
-    async ({ contact_key, message }) => {
-      console.log(`[TOOL] send_whatsapp_message: contact=${contact_key} message="${message}"`);
+    async ({ contact_query, message }) => {
+      console.log(`[TOOL] send_whatsapp_message: query="${contact_query}" message="${message}"`);
 
-      const contact = config.contacts[contact_key];
+      const contact = findContact(contact_query);
       if (!contact) {
         return {
-          content: [{ type: "text", text: `Contact "${contact_key}" not found.` }],
+          content: [{ type: "text", text: `Contact "${contact_query}" not found. Available: ${contactKeys.join(", ")}` }],
           isError: true,
         };
       }
 
-      console.log(`[SEND] From: ${process.env.TWILIO_WHATSAPP_NUMBER} To: ${contact.whatsapp}`);
+      console.log(`[SEND] To ${contact.name} (${contact.whatsapp})`);
 
       try {
-        // Try free-form message first
         let result;
         try {
           result = await twilioClient.messages.create({
@@ -60,7 +81,6 @@ function buildServer() {
             body: message,
           });
         } catch (freeFormErr) {
-          // Error 63016 = outside messaging window, use approved template
           if (freeFormErr.code === 63016 && process.env.TWILIO_TEMPLATE_SID) {
             console.log(`[TEMPLATE] Using template for ${contact.name}`);
             result = await twilioClient.messages.create({
@@ -95,12 +115,12 @@ function buildServer() {
     "list_contacts",
     {
       title: "List contacts",
-      description: "List all available contacts with their names and roles.",
+      description: "List all available contacts with their names and aliases.",
       inputSchema: {},
     },
     async () => {
       const list = Object.entries(config.contacts)
-        .map(([key, c]) => `• ${key}: ${c.name}${c.role ? ` (${c.role})` : ""}`)
+        .map(([key, c]) => `• ${c.name}${c.aliases?.length > 1 ? ` (also: ${c.aliases.slice(1).join(", ")})` : ""}`)
         .join("\n");
       return {
         content: [{ type: "text", text: `Available contacts:\n${list}` }],
