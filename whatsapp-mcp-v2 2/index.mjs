@@ -3,14 +3,35 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
-import twilio from "twilio";
+import fetch from "node-fetch";
 import * as z from "zod/v4";
 import config from "./config.mjs";
 
-const twilioClient = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
+const WAPPFLY_BASE = "https://wappfly.com/api";
+const WAPPFLY_TOKEN = process.env.WAPPFLY_API_TOKEN;
+
+// ─── Send via Wappfly ─────────────────────────────────────────────────────────
+async function wapplySend(toNumber, text) {
+  // Convert number to JID format: 6281234567@s.whatsapp.net
+  const digits = toNumber.replace(/\D/g, "");
+  const jid = `${digits}@s.whatsapp.net`;
+
+  console.log(`[WAPPFLY] Sending to ${jid}: "${text}"`);
+
+  const res = await fetch(`${WAPPFLY_BASE}/messages/send`, {
+    method: "POST",
+    headers: {
+      "X-API-Token": WAPPFLY_TOKEN,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ to: jid, text }),
+  });
+
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  console.log(`[WAPPFLY] Queued: msg_id=${data.msg_id}`);
+  return data;
+}
 
 // ─── Fuzzy contact lookup ─────────────────────────────────────────────────────
 function findContact(query) {
@@ -48,12 +69,8 @@ function buildServer() {
         `Send a WhatsApp message to one of ${config.owner.name}'s contacts. ` +
         `You can use any name, nickname or alias. Contacts: ${contactList}.`,
       inputSchema: {
-        contact_query: z
-          .string()
-          .describe("Name, nickname, or alias of who to message."),
-        message: z
-          .string()
-          .describe("The message body to send."),
+        contact_query: z.string().describe("Name, nickname, or alias of who to message."),
+        message: z.string().describe("The message body to send."),
       },
     },
     async ({ contact_query, message }) => {
@@ -67,40 +84,15 @@ function buildServer() {
         };
       }
 
-      console.log(`[SEND] To ${contact.name} (${contact.whatsapp})`);
-
       try {
-        let result;
-        const templateSid = process.env.TWILIO_TEMPLATE_SID;
-
-        if (templateSid) {
-          // Always use template to initiate -- works regardless of messaging window
-          console.log(`[TEMPLATE] Sending via approved template to ${contact.name}`);
-          result = await twilioClient.messages.create({
-            from: process.env.TWILIO_WHATSAPP_NUMBER,
-            to: contact.whatsapp,
-            contentSid: templateSid,
-            contentVariables: JSON.stringify({
-              "1": contact.name.split(" ")[0],
-              "2": message,
-            }),
-          });
-        } else {
-          // No template configured -- try free-form
-          console.log(`[FREEFORM] No template SID set, trying free-form`);
-          result = await twilioClient.messages.create({
-            from: process.env.TWILIO_WHATSAPP_NUMBER,
-            to: contact.whatsapp,
-            body: message,
-          });
-        }
-
-        console.log(`[SENT] SID: ${result.sid} To ${contact.name}: "${message}"`);
+        // Strip the whatsapp: prefix if present
+        const number = contact.whatsapp.replace("whatsapp:", "").replace("+", "");
+        await wapplySend(number, message);
         return {
           content: [{ type: "text", text: `Message sent to ${contact.name}: "${message}"` }],
         };
       } catch (err) {
-        console.error(`[TWILIO ERROR] ${err.message} Code: ${err.code}`);
+        console.error(`[WAPPFLY ERROR] ${err.message}`);
         return {
           content: [{ type: "text", text: `Failed to send: ${err.message}` }],
           isError: true,
@@ -213,7 +205,7 @@ app.delete("/mcp", async (req, res) => {
 });
 
 app.get("/", (_req, res) => {
-  res.json({ status: "WhatsApp MCP server running", owner: config.owner.name });
+  res.json({ status: "WhatsApp MCP server running (Wappfly)", owner: config.owner.name });
 });
 
 const PORT = process.env.PORT || 3000;
